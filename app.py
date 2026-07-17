@@ -27,6 +27,7 @@ from main import write_reports
 from htmlreport import write_html_report
 from models import BookPage, TitleReport
 import batch as batch_mod
+import liens
 
 app = Flask(__name__)
 JOBS: dict[str, dict] = {}
@@ -127,7 +128,9 @@ def _single_job(form):
         with MDLandRecClient() as c:
             c.login()
             chain = walk_from(c, start, int(form.get("depth", 3)))
-        flags = check_chain(chain)
+            owner_names = chain[0].deed.grantee_names() if chain else []
+            lf = liens.lien_flags(c, canon, owner_names)
+        flags = lf + check_chain(chain)
         report = TitleReport(county=canon, start_reference=start, chain=chain, flags=flags)
         jp, tp = write_reports(report)
         hp = write_html_report(report)
