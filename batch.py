@@ -32,6 +32,7 @@ from chain import walk_from
 from client import MDLandRecClient
 from curative import check_chain
 from main import write_reports
+from htmlreport import write_html_report
 from models import BookPage, TitleReport
 
 BATCH_DIR = config.OUTPUT_DIR / "batch"
@@ -98,13 +99,14 @@ def process_row(client: MDLandRecClient, row: dict, depth: int, found: dict = No
         flags = check_chain(chain)
         report = TitleReport(county=county, start_reference=start, chain=chain, flags=flags)
         jp, tp = write_reports(report)
+        hp = write_html_report(report)
         out["deeds_walked"] = len(chain)
         out["critical"] = sum(1 for f in flags if f.severity == "critical")
         out["warning"] = sum(1 for f in flags if f.severity == "warning")
         out["review_info"] = sum(1 for f in flags if f.severity in ("info", "review"))
         out["top_flags"] = "; ".join(
             f.code for f in flags if f.severity in ("critical", "warning"))[:300]
-        out["report_file"] = str(tp)
+        out["report_file"] = str(hp)
         out["status"] = "done"
     except Exception as e:
         out["status"] = "chain_error"
