@@ -122,22 +122,28 @@ def _check_deed(link: ChainLink) -> list[CurativeFlag]:
     if not d.grantees:
         add("critical", "NO_GRANTEE", "No grantee extracted.")
 
-    # Recited encumbrances (unreleased mortgage/lien language) [#3].
-    # Skip generic boilerplate ("subject to easements, covenants and
-    # restrictions of record") that appears in almost every deed; only flag a
-    # recited encumbrance that names a real instrument, lien, book, or amount.
+    # Recited encumbrances. Skip generic boilerplate ("subject to easements,
+    # covenants and restrictions of record"); then split what remains into real
+    # liens (need a release) vs. restrictions/agreements (run with the land).
     _enc_real = ("mortgage", "deed of trust", "lien", "judgment", "judgement",
                  "assessment", "liber", "folio", "$", "promissory",
                  "security instrument", "ucc", "note recorded")
     _enc_boiler = ("of record", "matters of record", "easements, covenants",
                    "covenants and restrictions", "restrictions of record",
                    "subject to all easements", "rights of way", "zoning")
+    _enc_lien = ("mortgage", "deed of trust", "lien", "judgment", "judgement",
+                 "security instrument", "promissory note", "financing statement")
     for enc in d.recited_encumbrances:
         e = (enc or "").lower()
         if not any(k in e for k in _enc_real) and any(b in e for b in _enc_boiler):
             continue
-        add("warning", "RECITED_ENCUMBRANCE",
-            f"Instrument recites an encumbrance: '{enc}'. Confirm it was released.")
+        if any(k in e for k in _enc_lien):
+            add("warning", "RECITED_LIEN",
+                f"Recites a lien/mortgage: '{enc}'. Confirm it was released.")
+        else:
+            add("info", "RECITED_RESTRICTION",
+                f"Recites a recorded restriction/agreement: '{enc}'. It runs with the "
+                "land - review its terms (noted, not necessarily a defect).")
 
     # Estate / probate transfer [#38/#46/#47]
     gblob = " ".join(d.grantor_names()).upper()
@@ -201,13 +207,21 @@ def _check_deed(link: ChainLink) -> list[CurativeFlag]:
             "Life-estate / remainder / reversion language. Confirm all interest holders "
             "joined the conveyance.")
 
-    # Nominal consideration - gift / possible fraudulent or estate transfer [#93/#13]
+    # Nominal consideration - gift / possible fraudulent or estate transfer [#93/#13].
+    # Skip routine cases: transfer into the owner's OWN trust/LLC (grantor and
+    # grantee are the same party) or a contribution for a membership/ownership
+    # interest - normal estate-planning / entity moves, not red flags.
     cons = (d.consideration or "").lower()
     if cons and any(k in cons for k in ("$0", "$1.00", "$1 ", "one dollar", "love and affection",
                                         "nominal", "gift", "no consideration")):
-        add("info", "NOMINAL_CONSIDERATION",
-            f"Nominal/no consideration ({d.consideration}). Possible gift, intra-family, "
-            "or fraudulent-transfer scenario.")
+        _self_transfer = _any_match(d.grantor_names(), d.grantee_names())
+        _entity_move = any(k in cons for k in ("membership interest", "member interest",
+                                               "capital contribution", "ownership interest",
+                                               "in exchange for"))
+        if not _self_transfer and not _entity_move:
+            add("info", "NOMINAL_CONSIDERATION",
+                f"Nominal/no consideration ({d.consideration}). Possible gift, intra-family, "
+                "or fraudulent-transfer scenario.")
 
     # Defective / missing legal description [#6]
     ld = (d.legal_description or "").strip()
