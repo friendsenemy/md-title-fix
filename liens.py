@@ -20,6 +20,7 @@ import sys
 
 import config
 from client import MDLandRecClient
+from models import CurativeFlag
 
 SEARCH_URL = config.BASE_URL + "Pages/Search.aspx"
 
@@ -137,6 +138,57 @@ def find_open_mortgages(rows: list) -> dict:
             released.add((m.group(1), m.group(2)))
     open_m = [m for m in mortgages if (m["book"], m["page"]) not in released]
     return {"mortgages": mortgages, "releases": releases, "open": open_m}
+
+
+def _owner_last_first(name: str):
+    """'Timothy Faro, Jr.' -> ('Faro', 'Timothy'); 'Krysta Faro' -> ('Faro','Krysta')."""
+    n = re.sub(r"(?i)\b(jr|sr|ii|iii|iv|esq|trustee|trustees|et ux|et al|aka|fka)\b", " ", name or "")
+    n = re.sub(r"[.,]", " ", n)
+    toks = [t for t in n.split() if len(t) > 1]
+    if not toks:
+        return "", ""
+    if len(toks) == 1:
+        return toks[0], ""
+    return toks[-1], toks[0]
+
+
+def lien_flags(client, county: str, owner_names, max_owners: int = 2) -> list:
+    """Search the name index for the owner(s) and return OPEN_MORTGAGE flags for
+    any recorded mortgage/deed of trust with no matching release. Fully guarded -
+    a failure here never breaks the title report."""
+    flags = []
+    seen = set()
+    try:
+        for nm in list(owner_names or [])[:max_owners]:
+            last, first = _owner_last_first(nm)
+            key = f"{last}|{first}".lower()
+            if not last or key in seen:
+                continue
+            seen.add(key)
+            rows = search_instruments(client, county, last, first, party="all")
+            res = find_open_mortgages(rows)
+            for m in res["open"]:
+                flags.append(CurativeFlag(
+                    severity="warning", code="OPEN_MORTGAGE",
+                    message=(f"Possible UNRELEASED {(m['instrument'] or 'mortgage').lower()} "
+                             f"for {first} {last}: Book {m['book']}/{m['page']} "
+                             f"({m['date']}) - no matching release found in the name index. "
+                             "Verify the payoff / release.")))
+            if res["mortgages"] and not res["open"]:
+                flags.append(CurativeFlag(
+                    severity="info", code="LIENS_CHECKED",
+                    message=(f"Name-index lien check for {first} {last}: "
+                             f"{len(res['mortgages'])} recorded mortgage(s)/deed(s) of trust, "
+                             "all appear released.")))
+            if not res["mortgages"]:
+                flags.append(CurativeFlag(
+                    severity="info", code="LIENS_CHECKED",
+                    message=f"Name-index lien check for {first} {last}: no recorded mortgages found."))
+    except Exception as e:
+        flags.append(CurativeFlag(
+            severity="info", code="LIEN_SEARCH_SKIPPED",
+            message=f"Automatic lien search could not complete ({type(e).__name__}); pull liens manually."))
+    return flags
 
 
 if __name__ == "__main__":
