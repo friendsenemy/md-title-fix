@@ -89,9 +89,17 @@ _SDAT_HEADERS = {
 }
 
 
+# When a batch run opens ONE shared Cloudflare-cleared browser it sets this, so
+# every _get() reuses that single browser instead of launching a new one each
+# time. This also avoids nesting Playwright sessions inside the MDLandRec one.
+ACTIVE_SESSION = None
+
+
 def _get(params: dict) -> list[dict]:
     """Fetch from SDAT open data. Falls back to a real browser when the plain
     request is blocked by Cloudflare's bot challenge (HTTP 403 'Just a moment')."""
+    if ACTIVE_SESSION is not None:
+        return ACTIVE_SESSION.query(params)
     try:
         with httpx.Client(timeout=30, headers=_SDAT_HEADERS,
                           follow_redirects=True) as c:
@@ -101,6 +109,54 @@ def _get(params: dict) -> list[dict]:
     except Exception:
         pass
     return _get_via_browser(params)
+
+
+class SdatSession:
+    """A reusable Cloudflare-cleared browser for many SDAT queries in one run.
+    Open it once (context manager), set sdat.ACTIVE_SESSION = it, then every
+    find_property() call reuses this one browser - fast, and no nested sessions."""
+
+    def __init__(self):
+        self._pw = None
+        self.browser = None
+        self.page = None
+
+    def __enter__(self):
+        from playwright.sync_api import sync_playwright
+        self._pw = sync_playwright().start()
+        self.browser = self._pw.chromium.launch(headless=False)
+        self.page = self.browser.new_context(
+            user_agent=_SDAT_HEADERS["User-Agent"]).new_page()
+        self.page.goto("https://opendata.maryland.gov/",
+                       wait_until="domcontentloaded", timeout=45000)
+        for _ in range(15):
+            t = (self.page.title() or "").lower()
+            if "just a moment" not in t and "attention" not in t:
+                break
+            self.page.wait_for_timeout(1000)
+        return self
+
+    def __exit__(self, *exc):
+        try:
+            if self.browser:
+                self.browser.close()
+        finally:
+            if self._pw:
+                self._pw.stop()
+
+    def query(self, params: dict) -> list[dict]:
+        import json as _json
+        from urllib.parse import urlencode
+        url = BASE + "?" + urlencode(params)
+        text = self.page.evaluate(
+            "async (u) => { const r = await fetch(u, "
+            "{headers: {'Accept': 'application/json'}}); return await r.text(); }",
+            url,
+        )
+        text = (text or "").strip()
+        if not text.startswith("[") and not text.startswith("{"):
+            raise RuntimeError("SDAT returned no JSON via shared session.")
+        return _json.loads(text)
 
 
 def _get_via_browser(params: dict) -> list[dict]:
