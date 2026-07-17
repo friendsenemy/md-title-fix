@@ -28,6 +28,7 @@ from pathlib import Path
 
 import config
 import sdat
+import liens
 from chain import walk_from
 from client import MDLandRecClient
 from curative import check_chain
@@ -96,7 +97,9 @@ def process_row(client: MDLandRecClient, row: dict, depth: int, found: dict = No
         county = config.resolve_county(prop["county"])
         start = BookPage(county=county, book=prop["book"], page=prop["page"])
         chain = walk_from(client, start, depth)
-        flags = check_chain(chain)
+        owner_names = chain[0].deed.grantee_names() if chain else []
+        lf = liens.lien_flags(client, county, owner_names)
+        flags = lf + check_chain(chain)
         report = TitleReport(county=county, start_reference=start, chain=chain, flags=flags)
         jp, tp = write_reports(report)
         hp = write_html_report(report)
