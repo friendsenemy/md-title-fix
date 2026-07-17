@@ -11,6 +11,7 @@ import io
 import threading
 import traceback
 import uuid
+import zipfile
 from contextlib import redirect_stdout
 from pathlib import Path
 
@@ -216,6 +217,40 @@ def api_summary(name):
     return send_file(p, as_attachment=True)
 
 
+@app.route("/api/batch_zip/<name>")
+def api_batch_zip(name):
+    summ = (config.OUTPUT_DIR / "batch" / name).resolve()
+    if not str(summ).startswith(str((config.OUTPUT_DIR / "batch").resolve())) or not summ.exists():
+        abort(404)
+    import csv as _csv
+    mem = io.BytesIO()
+    with zipfile.ZipFile(mem, "w", zipfile.ZIP_DEFLATED) as z:
+        z.write(summ, arcname=summ.name)
+        for r in _csv.DictReader(open(summ, encoding="utf-8")):
+            rf = (r.get("report_file") or "").strip()
+            if not rf:
+                continue
+            rp = (config.OUTPUT_DIR / Path(rf).name).resolve()
+            if str(rp).startswith(str(config.OUTPUT_DIR.resolve())) and rp.exists():
+                z.write(rp, arcname="reports/" + rp.name)
+    mem.seek(0)
+    return send_file(mem, mimetype="application/zip", as_attachment=True,
+                     download_name=summ.stem + "_all.zip")
+
+
+@app.route("/api/last_batch")
+def api_last_batch():
+    bdir = config.OUTPUT_DIR / "batch"
+    files = sorted(bdir.glob("summary_*.csv"), key=lambda q: q.stat().st_mtime,
+                   reverse=True) if bdir.exists() else []
+    if not files:
+        return jsonify({"summary_csv": None, "rows": []})
+    import csv as _csv
+    latest = files[0]
+    rows = list(_csv.DictReader(open(latest, encoding="utf-8")))
+    return jsonify({"summary_csv": latest.name, "rows": rows})
+
+
 HTML = r"""<!doctype html><html><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Maryland Title Research</title>
@@ -352,13 +387,15 @@ if(res.report_file){h+='<div class="card"><a href="/api/report/'+encodeURICompon
 o.innerHTML=h;}
 function renderBatch(res){const o=document.getElementById('b_out');if(!res){return;}
 let h='<div class="card"><h3 style="margin:0 0 8px">Batch results ('+res.rows.length+' properties)</h3>'+
-'<div style="margin-bottom:10px"><a class="pill o" href="/api/summary/'+encodeURIComponent(res.summary_csv)+'">&darr; Download summary CSV</a></div>'+
+'<div style="margin-bottom:10px"><a class="pill o" href="/api/summary/'+encodeURIComponent(res.summary_csv)+'">&darr; Download summary CSV</a> '+'<a class="pill o" href="/api/batch_zip/'+encodeURIComponent(res.summary_csv)+'">&darr; Download all (ZIP)</a></div>'+
 '<table><tr><th>Property</th><th>Status</th><th>County</th><th>Liber/Folio</th><th>Deeds</th><th>Crit</th><th>Warn</th><th>Report</th></tr>';
 res.rows.forEach(r=>{h+='<tr><td>'+esc(r.label||r.input_address)+'</td><td>'+esc(r.status)+'</td><td>'+esc(r.county)+'</td>'+
 '<td>'+esc(r.liber)+'/'+esc(r.folio)+'</td><td>'+esc(r.deeds_walked)+'</td>'+
 '<td>'+(r.critical>0?'<b style="color:#c0392b">'+esc(r.critical)+'</b>':esc(r.critical))+'</td><td>'+esc(r.warning)+'</td>'+
 '<td>'+(r.report_file?'<a href="/api/report/'+encodeURIComponent(r.report_file.split(/[\\\\/]/).pop())+'" target="_blank">open</a>':'-')+'</td></tr>';});
 h+='</table></div>';o.innerHTML=h;}
+
+window.addEventListener('load',function(){fetch('/api/last_batch').then(r=>r.json()).then(d=>{if(d&&d.rows&&d.rows.length){renderBatch(d);}}).catch(function(){});});
 </script></body></html>"""
 
 
